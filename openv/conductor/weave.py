@@ -48,20 +48,36 @@ class WeaveConductor:
                 self.console.print(f"[red]Unexpected conductor error: {exc}[/]")
 
     async def _respond(self, session_id: str) -> None:
+        response_text = await self.ask_once(session_id, stream_to_console=True)
+        self.vault.add_message(session_id, "assistant", response_text)
+
+    async def ask_once(self, session_id: str, stream_to_console: bool = False) -> str:
         history = self.vault.get_messages(session_id, limit=40)
         messages = [{"role": m.role, "content": m.content} for m in history]
 
         response_text = ""
         pending_tool_calls: list[dict[str, Any]] = []
-        panel = Panel(Markdown(""), title="assistant", border_style="blue")
+        if stream_to_console:
+            panel = Panel(Markdown(""), title="assistant", border_style="blue")
+            with Live(panel, refresh_per_second=10, console=self.console) as live:
+                async for chunk in self.loom.chat_stream(self.model, messages, self.tools.specs()):
+                    msg = chunk.get("message", {})
+                    piece = msg.get("content", "")
+                    if piece:
+                        response_text += piece
+                        live.update(Panel(Markdown(response_text), title="assistant", border_style="blue"))
 
-        with Live(panel, refresh_per_second=10, console=self.console) as live:
+                    for tool_call in msg.get("tool_calls", []) or []:
+                        pending_tool_calls.append(tool_call)
+
+                    if chunk.get("done"):
+                        break
+        else:
             async for chunk in self.loom.chat_stream(self.model, messages, self.tools.specs()):
                 msg = chunk.get("message", {})
                 piece = msg.get("content", "")
                 if piece:
                     response_text += piece
-                    live.update(Panel(Markdown(response_text), title="assistant", border_style="blue"))
 
                 for tool_call in msg.get("tool_calls", []) or []:
                     pending_tool_calls.append(tool_call)
@@ -73,14 +89,14 @@ class WeaveConductor:
             tool_messages = await self._execute_tools(pending_tool_calls)
             for tool_message in tool_messages:
                 self.vault.add_message(session_id, "tool", tool_message["content"])
-            await self._respond(session_id)
-            return
+            return await self.ask_once(session_id, stream_to_console=stream_to_console)
 
         usage = self.scribe.record_usage(json.dumps(messages), response_text, self.model)
-        self.console.print(
-            f"\n[dim]tokens prompt={usage.prompt_tokens} completion={usage.completion_tokens} total={usage.total_tokens}[/]"
-        )
-        self.vault.add_message(session_id, "assistant", response_text)
+        if stream_to_console:
+            self.console.print(
+                f"\n[dim]tokens prompt={usage.prompt_tokens} completion={usage.completion_tokens} total={usage.total_tokens}[/]"
+            )
+        return response_text
 
     async def _execute_tools(self, tool_calls: list[dict[str, Any]]) -> list[dict[str, str]]:
         messages: list[dict[str, str]] = []
