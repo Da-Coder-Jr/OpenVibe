@@ -16,8 +16,10 @@ OpenVibe is an Ollama-powered coding assistant with both a terminal workflow and
 ## Prerequisites
 
 - Python **3.11+**
-- [Ollama](https://ollama.com/) running locally (default: `http://127.0.0.1:11434`)
-- An installed model (default config uses `llama3.1`)
+- A running Ollama-compatible endpoint:
+  - local Ollama (`http://127.0.0.1:11434`), or
+  - Ollama Cloud / hosted endpoint (set in config; see below).
+- An installed/available model (default config uses `llama3.1`).
 
 ## Quick start
 
@@ -32,11 +34,13 @@ source .venv/bin/activate
 
 # 3) install runtime dependencies
 python -m pip install --upgrade pip
-python -m pip install typer rich httpx
+python -m pip install -r requirements.txt
 
 # 4) verify the CLI is available
 python -m openv.cli.main --help
 ```
+
+If step 4 fails with `ModuleNotFoundError: No module named "typer"`, your virtualenv is active but dependencies were not installed into it yet. Re-run step 3 in the same shell session.
 
 ## Configure Ollama
 
@@ -58,6 +62,29 @@ Default config:
 ```
 
 If you want a different model or host, edit `~/.openv/config.json`.
+
+### Using Ollama Cloud / hosted endpoints
+
+OpenVibe only needs an Ollama-compatible `base_url`. If you are using a hosted endpoint, update `~/.openv/config.json`:
+
+```json
+{
+  "ollama": {
+    "base_url": "https://<your-endpoint>",
+    "model": "<your-model>",
+    "timeout": 90
+  }
+}
+```
+
+Then run:
+
+```bash
+python -m openv.cli.main doctor
+```
+
+If your hosted endpoint requires auth headers, you will need to run it through a local proxy that injects credentials (OpenVibe currently sends plain JSON requests without custom auth headers).
+
 
 ## CLI commands
 
@@ -114,7 +141,7 @@ OpenVibe keeps all app data in `~/.openv/`:
   - Pull the configured model (example): `ollama pull llama3.1`.
 - **`ModuleNotFoundError` for `typer`, `rich`, or `httpx`**
   - Reinstall dependencies in your active environment:
-    `python -m pip install typer rich httpx`.
+    `python -m pip install -r requirements.txt`.
 - **GUI does not open**
   - Ensure your environment supports Tkinter and desktop windows.
 
