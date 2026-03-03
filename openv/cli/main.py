@@ -8,6 +8,7 @@ from rich.table import Table
 
 from openv.conductor.weave import WeaveConductor, run_conductor
 from openv.default_config import DB_PATH, load_config
+from openv.gui_app import OpenVGUI
 from openv.loom.client import LoomClient
 from openv.scribe.telemetry import Scribe
 from openv.vault.store import Vault
@@ -86,6 +87,17 @@ def vault_list() -> None:
         table.add_row(row.id, row.title, row.updated_at)
 
     console.print(table)
+
+
+@app.command()
+def ui() -> None:
+    """Launch the OpenV desktop GUI."""
+    try:
+        gui = OpenVGUI()
+    except Exception as exc:
+        console.print(f"[red]Unable to launch GUI: {exc}[/]")
+        raise typer.Exit(code=1)
+    gui.run()
 
 
 if __name__ == "__main__":
