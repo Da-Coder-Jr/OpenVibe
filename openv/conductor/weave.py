@@ -128,3 +128,10 @@ class WeaveConductor:
 
                 payload = json.dumps({"ok": result.ok, "message": result.message, "data": result.data})
                 self.vault.add_message(session_id, "tool", payload, tool_call_id=tc_id)
+
+
+def run_conductor(conductor: WeaveConductor, session_id: str) -> None:
+    try:
+        asyncio.run(conductor.run_session(session_id))
+    except KeyboardInterrupt:
+        conductor.console.print("\n[yellow]OpenVibe stopped.[/]")
