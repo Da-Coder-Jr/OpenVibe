@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import sqlite3
 import uuid
+import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 
 @dataclass(slots=True)
@@ -22,6 +24,19 @@ class MessageRecord:
     role: str
     content: str
     created_at: str
+    tool_calls: str | None = None
+    tool_call_id: str | None = None
+
+    def to_ollama_dict(self) -> dict[str, Any]:
+        d = {"role": self.role, "content": self.content}
+        if self.tool_calls:
+            try:
+                d["tool_calls"] = json.loads(self.tool_calls)
+            except json.JSONDecodeError:
+                pass
+        if self.tool_call_id:
+            d["tool_call_id"] = self.tool_call_id
+        return d
 
 
 class Vault:
@@ -54,11 +69,21 @@ class Vault:
                     session_id TEXT NOT NULL,
                     role TEXT NOT NULL,
                     content TEXT NOT NULL,
+                    tool_calls TEXT,
+                    tool_call_id TEXT,
                     created_at TEXT NOT NULL,
                     FOREIGN KEY(session_id) REFERENCES sessions(id)
                 )
                 """
             )
+            # Migration: check if tool_calls column exists
+            cursor = conn.execute("PRAGMA table_info(messages)")
+            columns = [row["name"] for row in cursor.fetchall()]
+            if "tool_calls" not in columns:
+                conn.execute("ALTER TABLE messages ADD COLUMN tool_calls TEXT")
+            if "tool_call_id" not in columns:
+                conn.execute("ALTER TABLE messages ADD COLUMN tool_call_id TEXT")
+
             conn.commit()
 
     @staticmethod
@@ -83,23 +108,42 @@ class Vault:
             ).fetchall()
         return [SessionRecord(**dict(row)) for row in rows]
 
-    def add_message(self, session_id: str, role: str, content: str) -> MessageRecord:
+    def add_message(
+        self,
+        session_id: str,
+        role: str,
+        content: str,
+        tool_calls: list[dict[str, Any]] | None = None,
+        tool_call_id: str | None = None
+    ) -> MessageRecord:
         now = self._ts()
+        tool_calls_json = json.dumps(tool_calls) if tool_calls else None
         with self._connect() as conn:
             cursor = conn.execute(
-                "INSERT INTO messages (session_id, role, content, created_at) VALUES (?, ?, ?, ?)",
-                (session_id, role, content, now),
+                """
+                INSERT INTO messages (session_id, role, content, tool_calls, tool_call_id, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (session_id, role, content, tool_calls_json, tool_call_id, now),
             )
             conn.execute("UPDATE sessions SET updated_at = ? WHERE id = ?", (now, session_id))
             conn.commit()
             msg_id = int(cursor.lastrowid)
-        return MessageRecord(id=msg_id, session_id=session_id, role=role, content=content, created_at=now)
+        return MessageRecord(
+            id=msg_id,
+            session_id=session_id,
+            role=role,
+            content=content,
+            tool_calls=tool_calls_json,
+            tool_call_id=tool_call_id,
+            created_at=now
+        )
 
     def get_messages(self, session_id: str, limit: int = 50) -> list[MessageRecord]:
         with self._connect() as conn:
             rows = conn.execute(
                 """
-                SELECT id, session_id, role, content, created_at
+                SELECT id, session_id, role, content, tool_calls, tool_call_id, created_at
                 FROM messages
                 WHERE session_id = ?
                 ORDER BY id DESC

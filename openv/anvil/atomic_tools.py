@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import difflib
 import hashlib
+import os
+import subprocess
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -17,9 +20,20 @@ class ToolResult:
 class BaseTool:
     name: str = "base"
     description: str = ""
+    parameters: dict[str, Any] = {"type": "object", "properties": {}, "required": []}
 
     async def run(self, **kwargs: Any) -> ToolResult:
         raise NotImplementedError
+
+    def spec(self) -> dict[str, Any]:
+        return {
+            "type": "function",
+            "function": {
+                "name": self.name,
+                "description": self.description,
+                "parameters": self.parameters,
+            },
+        }
 
 
 class AtomicFileHandler:
@@ -37,7 +51,7 @@ class AtomicFileHandler:
     @staticmethod
     def write_if_clear(path: Path, new_content: str, original_checksum: str) -> tuple[bool, str]:
         current_content, current_checksum = AtomicFileHandler.read_with_checksum(path)
-        if current_checksum != original_checksum:
+        if original_checksum and current_checksum != original_checksum:
             return False, "File changed since read; refusing to overwrite to prevent conflicts"
         if current_content == new_content:
             return True, "No changes required"
@@ -49,6 +63,15 @@ class AtomicFileHandler:
 class SmartWriteTool(BaseTool):
     name = "smart_write"
     description = "Safely write content to a file with checksum and diff awareness"
+    parameters = {
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "description": "Target file path"},
+            "content": {"type": "string", "description": "Desired file content"},
+            "checksum": {"type": "string", "description": "Expected checksum to prevent overwriting"},
+        },
+        "required": ["path", "content"],
+    }
 
     async def run(self, **kwargs: Any) -> ToolResult:
         path_str = kwargs.get("path")
@@ -75,6 +98,93 @@ class SmartWriteTool(BaseTool):
         return ToolResult(ok, message, {"path": str(target), "checksum": current_checksum, "diff": diff})
 
 
+class ListFilesTool(BaseTool):
+    name = "list_files"
+    description = "List files in a directory"
+    parameters = {
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "description": "Directory to list (defaults to .)"},
+        },
+        "required": [],
+    }
+
+    async def run(self, **kwargs: Any) -> ToolResult:
+        path_str = kwargs.get("path", ".")
+        target = Path(path_str).expanduser().resolve()
+        if not target.exists():
+            return ToolResult(False, f"Directory {path_str} does not exist", {})
+
+        try:
+            files = [str(p.relative_to(target)) for p in target.rglob("*") if p.is_file()]
+            if len(files) > 200:
+                files = files[:200] + ["... (truncated)"]
+            return ToolResult(True, f"Listed {len(files)} files", {"files": files})
+        except Exception as e:
+            return ToolResult(False, str(e), {})
+
+
+class ReadFileTool(BaseTool):
+    name = "read_file"
+    description = "Read the content of a file"
+    parameters = {
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "description": "File to read"},
+        },
+        "required": ["path"],
+    }
+
+    async def run(self, **kwargs: Any) -> ToolResult:
+        path_str = kwargs.get("path")
+        if not path_str:
+            return ToolResult(False, "path is required", {})
+        target = Path(path_str).expanduser().resolve()
+        if not target.exists():
+            return ToolResult(False, f"File {path_str} does not exist", {})
+
+        try:
+            content, checksum = AtomicFileHandler.read_with_checksum(target)
+            return ToolResult(True, "File read successfully", {"content": content, "checksum": checksum})
+        except Exception as e:
+            return ToolResult(False, str(e), {})
+
+
+class ShellExecuteTool(BaseTool):
+    name = "shell_execute"
+    description = "Execute a shell command"
+    parameters = {
+        "type": "object",
+        "properties": {
+            "command": {"type": "string", "description": "Command to run"},
+        },
+        "required": ["command"],
+    }
+
+    async def run(self, **kwargs: Any) -> ToolResult:
+        command = kwargs.get("command")
+        if not command:
+            return ToolResult(False, "command is required", {})
+
+        try:
+            result = subprocess.run(
+                command,
+                shell=True,
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+            return ToolResult(
+                result.returncode == 0,
+                f"Command exited with code {result.returncode}",
+                {"stdout": result.stdout, "stderr": result.stderr, "code": result.returncode}
+            )
+        except subprocess.TimeoutExpired:
+            return ToolResult(False, "Command timed out", {})
+        except Exception as e:
+            return ToolResult(False, str(e), {})
+
+
 class ToolRegistry:
     def __init__(self) -> None:
         self._tools: dict[str, BaseTool] = {}
@@ -83,28 +193,7 @@ class ToolRegistry:
         self._tools[tool.name] = tool
 
     def specs(self) -> list[dict[str, Any]]:
-        return [
-            {
-                "type": "function",
-                "function": {
-                    "name": name,
-                    "description": tool.description,
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "path": {"type": "string", "description": "Target file path"},
-                            "content": {"type": "string", "description": "Desired file content"},
-                            "checksum": {
-                                "type": "string",
-                                "description": "Expected checksum to prevent overwriting external changes",
-                            },
-                        },
-                        "required": ["path", "content"],
-                    },
-                },
-            }
-            for name, tool in self._tools.items()
-        ]
+        return [tool.spec() for tool in self._tools.values()]
 
     async def execute(self, name: str, arguments: dict[str, Any]) -> ToolResult:
         tool = self._tools.get(name)
